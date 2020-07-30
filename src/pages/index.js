@@ -1,44 +1,82 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import { Helmet } from 'react-helmet';
 import L from 'leaflet';
-import { Marker } from 'react-leaflet';
 
-import { promiseToFlyTo, getCurrentLocation } from 'lib/map';
+import { useTracker } from 'hooks';
+import { commafy, friendlyDate } from 'lib/util';
 
 import Layout from 'components/Layout';
 import Container from 'components/Container';
 import Map from 'components/Map';
-import Snippet from 'components/Snippet';
-
-import gatsby_astronaut from 'assets/images/gatsby-astronaut.jpg';
 
 const LOCATION = {
-  lat: 38.9072,
-  lng: -77.0369,
+  lat: 0,
+  lng: 0
 };
 const CENTER = [LOCATION.lat, LOCATION.lng];
 const DEFAULT_ZOOM = 2;
-const ZOOM = 10;
-
-const timeToZoom = 2000;
-const timeToOpenPopupAfterZoom = 4000;
-const timeToUpdatePopupAfterZoom = timeToOpenPopupAfterZoom + 3000;
-
-const popupContentHello = `<p>Hello 👋</p>`;
-const popupContentGatsby = `
-  <div class="popup-gatsby">
-    <div class="popup-gatsby-image">
-      <img class="gatsby-astronaut" src=${gatsby_astronaut} />
-    </div>
-    <div class="popup-gatsby-content">
-      <h1>Gatsby Leaflet Starter</h1>
-      <p>Welcome to your new Gatsby site. Now go build something great!</p>
-    </div>
-  </div>
-`;
 
 const IndexPage = () => {
-  const markerRef = useRef();
+  const { data: stats = {} } = useTracker({
+    api: 'all',
+  });
+
+  const { data: countries = [] } = useTracker({
+    api: 'countries',
+  });
+
+  const hasCountries = Array.isArray( countries ) && countries.length > 0;
+
+  const dashboardStats = [
+    {
+      primary: {
+        label: 'Total Cases',
+        value: stats ? commafy( stats?.cases ) : '-',
+      },
+      secondary: {
+        label: 'Per 1 Million',
+        value: stats ? commafy( stats?.casesPerOneMillion ) : '-',
+      },
+    },
+    {
+      primary: {
+        label: 'Total Deaths',
+        value: stats ? commafy( stats?.deaths ) : '-',
+      },
+      secondary: {
+        label: 'Per 1 Million',
+        value: stats ? commafy( stats?.deathsPerOneMillion ) : '-',
+      },
+    },
+    {
+      primary: {
+        label: 'Total Tests',
+        value: stats ? commafy( stats?.tests ) : '-',
+      },
+      secondary: {
+        label: 'Per 1 Million',
+        value: stats ? commafy( stats?.testsPerOneMillion ) : '-',
+      },
+    },
+    {
+      primary: {
+        label: 'Active Cases',
+        value: stats ? commafy( stats?.active ) : '-',
+      },
+    },
+    {
+      primary: {
+        label: 'Critical Cases',
+        value: stats ? commafy( stats?.critical ) : '-',
+      },
+    },
+    {
+      primary: {
+        label: 'Recovered Cases',
+        value: stats ? commafy( stats?.recovered ) : '-',
+      },
+    },
+  ];
 
   /**
    * mapEffect
@@ -46,33 +84,77 @@ const IndexPage = () => {
    * @example Here this is and example of being used to zoom in and set a popup on load
    */
 
-  async function mapEffect({ leafletElement } = {}) {
-    if ( !leafletElement ) return;
+  async function mapEffect({ leafletElement: map } = {}) {
+    if ( !hasCountries || !map ) return;
 
-    const popup = L.popup({
-      maxWidth: 800,
+    map.eachLayer(( layer ) => {
+      if ( layer?.options?.name === 'OpenStreetMap' ) return;
+      map.removeLayer( layer );
     });
 
-    const location = await getCurrentLocation().catch(() => LOCATION );
+    const geoJson = {
+      type: 'FeatureCollection',
+      features: countries.map(( country = {}) => {
+        const { countryInfo = {} } = country;
+        const { lat, long: lng } = countryInfo;
+        return {
+          type: 'Feature',
+          properties: {
+            ...country,
+          },
+          geometry: {
+            type: 'Point',
+            coordinates: [lng, lat],
+          },
+        };
+      }),
+    };
 
-    const { current = {} } = markerRef || {};
-    const { leafletElement: marker } = current;
+    const geoJsonLayers = new L.GeoJSON( geoJson, {
+      pointToLayer: ( feature = {}, latlng ) => {
+        const { properties = {} } = feature;
+        let updatedFormatted;
+        let casesString;
 
-    marker.setLatLng( location );
-    popup.setLatLng( location );
-    popup.setContent( popupContentHello );
+        const { country, updated, cases, deaths, recovered } = properties;
 
-    setTimeout( async () => {
-      await promiseToFlyTo( leafletElement, {
-        zoom: ZOOM,
-        center: location,
-      });
+        casesString = `${cases}`;
 
-      marker.bindPopup( popup );
+        if ( cases > 1000000 ) {
+          casesString = `${casesString.slice( 0, -6 )}M+`;
+        } else if ( cases > 1000 ) {
+          casesString = `${casesString.slice( 0, -3 )}K+`;
+        }
+        if ( updated ) {
+          updatedFormatted = new Date( updated ).toLocaleString();
+        }
 
-      setTimeout(() => marker.openPopup(), timeToOpenPopupAfterZoom );
-      setTimeout(() => marker.setPopupContent( popupContentGatsby ), timeToUpdatePopupAfterZoom );
-    }, timeToZoom );
+        const html = `
+          <span class="icon-marker">
+            <span class="icon-marker-tooltip">
+              <h2>${country}</h2>
+              <ul>
+                <li><strong>Confirmed:</strong> ${cases}</li>
+                <li><strong>Deaths:</strong> ${deaths}</li>
+                <li><strong>Recovered:</strong> ${recovered}</li>
+                <li><strong>Last Update:</strong> ${updatedFormatted}</li>
+              </ul>
+            </span>
+            ${casesString}
+          </span>
+        `;
+
+        return L.marker( latlng, {
+          icon: L.divIcon({
+            className: 'icon',
+            html,
+          }),
+          riseOnHover: true,
+        });
+      },
+    });
+
+    geoJsonLayers.addTo( map );
   }
 
   const mapSettings = {
@@ -87,15 +169,41 @@ const IndexPage = () => {
       <Helmet>
         <title>Home Page</title>
       </Helmet>
-
-      <Map {...mapSettings}>
-        <Marker ref={markerRef} position={CENTER} />
-      </Map>
+      <div className="tracker">
+        <Map {...mapSettings} />
+        <div className="tracker-stats">
+          <ul>
+            { dashboardStats.map(({ primary = {}, secondary = {} }, i ) => {
+              return (
+                <li key={`Stat-${i}`} className="tracker-stat">
+                  { primary.value && (
+                    <p className="tracker-stat-primary">
+                      { primary.value }
+                      <strong>{ primary.label }</strong>
+                    </p>
+                  ) }
+                  { secondary.value && (
+                    <p className="tracker-stat-secondary">
+                      { secondary.value }
+                      <strong>{ secondary.label }</strong>
+                    </p>
+                  ) }
+                </li>
+              );
+            }) }
+          </ul>
+        </div>
+        <div className="tracker-last-updated">
+          <p>Last Updated: { stats ? friendlyDate( stats?.updated ) : '-' }</p>
+        </div>
+      </div>
 
       <Container type="content" className="text-center home-start">
         <h2>Still Getting Started?</h2>
         <p>Run the following in your terminal!</p>
-        <Snippet>gatsby new [directory] https://github.com/colbyfayock/gatsby-starter-leaflet</Snippet>
+        <pre>
+          <code>gatsby new [directory] https://github.com/colbyfayock/gatsby-starter-leaflet</code>
+        </pre>
         <p className="note">Note: Gatsby CLI required globally for the above command</p>
       </Container>
     </Layout>
